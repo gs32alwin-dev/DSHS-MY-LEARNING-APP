@@ -319,6 +319,68 @@ export const INITIAL_MATERIALS: Material[] = [
     "type": "link",
     "url": "https://en.wikipedia.org/wiki/Chemical_reaction",
     "date": "2024-05-20"
+  }export const INITIAL_FOLDERS: Folder[] = [
+  {
+    "id": "seed-folder-1",
+    "subjectId": "math",
+    "name": "Chapter 1: Number Systems",
+    "createdAt": "2024-05-20"
+  },
+  {
+    "id": "seed-folder-2",
+    "subjectId": "science",
+    "name": "Unit 1: Chemical Reactions",
+    "createdAt": "2024-05-20"
+  }
+];/**
+ * =========================================================================
+ * PERMANENT CONTENT STORAGE (SEED DATA)
+ * =========================================================================
+ */
+
+export const INITIAL_MATERIALS: Material[] = [
+  {
+    "id": "mat-g508ixd77",
+    "subjectId": "science",
+    "title": "video new chapter 1",
+    "type": "video",
+    "date": "12/28/2025",
+    "url": "blob:https://665w8l6d4ctp6mz3o80ksl29tkvt8rvf5tyya9xiyc7wrmoz8o-h845251650.scf.usercontent.goog/35426a7b-07b5-43bf-875a-c48fc52c9bd3"
+  },
+  {
+    "id": "mat-n170tmhst",
+    "subjectId": "science",
+    "title": "image",
+    "type": "image",
+    "date": "12/28/2025",
+    "url": "blob:https://665w8l6d4ctp6mz3o80ksl29tkvt8rvf5tyya9xiyc7wrmoz8o-h845251650.scf.usercontent.goog/8d853a4e-7e0f-4c5b-acc5-d8d123b51a2d"
+  },
+  {
+    "id": "seed-mat-1",
+    "subjectId": "math",
+    "folderId": "seed-folder-1",
+    "title": "Introduction to Rational Numbers (Video)",
+    "type": "video",
+    "url": "https://www.w3schools.com/html/mov_bbb.mp4",
+    "date": "2024-05-20"
+  },
+  {
+    "id": "seed-mat-2",
+    "subjectId": "math",
+    "folderId": "seed-folder-1",
+    "title": "Number System Flowchart",
+    "type": "image",
+    "url": "https://images.unsplash.com/photo-1635070041078-e363dbe005cb?auto=format&fit=crop&q=80&w=1000",
+    "date": "2024-05-20"
+  },
+  {
+    "id": "seed-mat-3",
+    "subjectId": "science",
+    "folderId": "seed-folder-2",
+    "title": "Class Notes - Balancing Equations",
+    "type": "link",
+    "url": "https://en.wikipedia.org/wiki/Chemical_reaction",
+    "date": "2024-05-20"
   }
 ];
 
