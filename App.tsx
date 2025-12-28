@@ -8,6 +8,19 @@ import AudioPlayer from './components/AudioPlayer.tsx';
 import SlideViewer from './components/SlideViewer.tsx';
 
 const App: React.FC = () => {
+  // --- ROLE & PREVIEW MANAGEMENT ---
+  const [isAdmin, setIsAdmin] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('role') === 'admin') return true;
+    return localStorage.getItem('edusphere_role') === 'admin';
+  });
+
+  const [isPreviewMode, setIsPreviewMode] = useState(false); // Admin can toggle this to see student view
+  const [showAdminLogin, setShowAdminLogin] = useState(false);
+  const [adminPasscode, setAdminPasscode] = useState('');
+  const [loginError, setLoginError] = useState(false);
+
+  // App UI State
   const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
   const [selectedFolder, setSelectedFolder] = useState<Folder | null>(null);
   const [activeTab, setActiveTab] = useState<ContentType>('materials');
@@ -15,7 +28,6 @@ const App: React.FC = () => {
   const [topic, setTopic] = useState('');
   const [selectedMaterial, setSelectedMaterial] = useState<Material | null>(null);
   
-  // App UI State
   const [loading, setLoading] = useState(false);
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [showFolderModal, setShowFolderModal] = useState(false);
@@ -24,7 +36,6 @@ const App: React.FC = () => {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [pastedLink, setPastedLink] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [hasApiKey, setHasApiKey] = useState(true);
 
   // AI Content State
   const [mindMapData, setMindMapData] = useState<MindMapNode | null>(null);
@@ -46,29 +57,34 @@ const App: React.FC = () => {
     return (saved && localStorage.getItem('edusphere_is_modified') === 'true') ? JSON.parse(saved) : INITIAL_MATERIALS;
   });
 
-  // Sync state to LocalStorage immediately on change
+  // Sync state to LocalStorage
   useEffect(() => {
     localStorage.setItem('edusphere_folders_v4', JSON.stringify(folders));
     localStorage.setItem('edusphere_materials_v4', JSON.stringify(materials));
     localStorage.setItem('edusphere_is_modified', isModified.toString());
   }, [materials, folders, isModified]);
 
-  // API Key Selection logic
-  useEffect(() => {
-    const checkApiKey = async () => {
-      if (typeof window !== 'undefined' && (window as any).aistudio) {
-        const has = await (window as any).aistudio.hasSelectedApiKey();
-        setHasApiKey(has);
-      }
-    };
-    checkApiKey();
-  }, []);
-
-  const handleOpenKeySelector = async () => {
-    if (typeof window !== 'undefined' && (window as any).aistudio) {
-      await (window as any).aistudio.openSelectKey();
-      setHasApiKey(true);
+  // Handle Admin Login Logic
+  const handleAdminAuth = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (adminPasscode === "admin123") {
+      setIsAdmin(true);
+      localStorage.setItem('edusphere_role', 'admin');
+      setShowAdminLogin(false);
+      setAdminPasscode('');
+      setLoginError(false);
+    } else {
+      setLoginError(true);
+      setAdminPasscode('');
+      setTimeout(() => setLoginError(false), 1500);
     }
+  };
+
+  const handleLogout = () => {
+    setIsAdmin(false);
+    setIsPreviewMode(false);
+    localStorage.removeItem('edusphere_role');
+    window.history.replaceState({}, '', window.location.pathname);
   };
 
   // --- CONTENT ACTIONS ---
@@ -121,26 +137,20 @@ const App: React.FC = () => {
     setPastedLink('');
   };
 
-  // --- ROBUST DELETION LOGIC ---
-
   const deleteMaterial = (id: string, e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation(); // CRITICAL: Prevent the item from opening
-    if (confirm("Are you sure you want to permanently delete this material from your local library?")) {
-      setMaterials(prev => {
-        const filtered = prev.filter(m => m.id !== id);
-        console.log("Material deleted. Remaining count:", filtered.length);
-        return filtered;
-      });
+    e.preventDefault(); e.stopPropagation();
+    if (!isAdmin || isPreviewMode) return;
+    if (confirm("Delete this resource locally?")) {
+      setMaterials(prev => prev.filter(m => m.id !== id));
       setIsModified(true);
       if (selectedMaterial?.id === id) setSelectedMaterial(null);
     }
   };
 
   const deleteFolder = (id: string, e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation(); // CRITICAL: Prevent the folder from opening
-    if (confirm("Delete this chapter? All files inside will stay but the folder will be removed.")) {
+    e.preventDefault(); e.stopPropagation();
+    if (!isAdmin || isPreviewMode) return;
+    if (confirm("Delete this chapter? Files inside will be detached.")) {
       setFolders(prev => prev.filter(f => f.id !== id));
       setMaterials(prev => prev.map(m => m.folderId === id ? { ...m, folderId: undefined } : m));
       setIsModified(true);
@@ -149,9 +159,11 @@ const App: React.FC = () => {
   };
 
   const resetToOriginal = () => {
-    if (confirm("DISCARD ALL browser changes? This will permanently delete your uploads and revert to the default school files.")) {
+    if (confirm("Discard ALL browser edits and revert to the original site code?")) {
       setIsModified(false);
-      localStorage.clear();
+      localStorage.removeItem('edusphere_folders_v4');
+      localStorage.removeItem('edusphere_materials_v4');
+      localStorage.removeItem('edusphere_is_modified');
       window.location.reload();
     }
   };
@@ -235,23 +247,39 @@ const App: React.FC = () => {
   };
 
   const generateConstantsCode = () => {
-    return `// UPDATE constants.tsx WITH THIS CODE:\n\nexport const INITIAL_FOLDERS: Folder[] = ${JSON.stringify(folders, null, 2)};\n\nexport const INITIAL_MATERIALS: Material[] = ${JSON.stringify(materials, null, 2)};`;
+    return `/**\n * COPY AND PASTE THIS INTO constants.tsx\n */\n\nexport const INITIAL_FOLDERS: Folder[] = ${JSON.stringify(folders, null, 2)};\n\nexport const INITIAL_MATERIALS: Material[] = ${JSON.stringify(materials, null, 2)};`;
   };
+
+  const isRealAdmin = isAdmin && !isPreviewMode;
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col">
-      {/* Draft Notification Header */}
-      {isModified && (
-        <div className="bg-rose-600 text-white px-6 py-3 flex items-center justify-between text-xs font-black uppercase tracking-widest shadow-lg z-[100]">
+      {/* Draft Notification Header - ADMIN ONLY */}
+      {isAdmin && (
+        <div className={`${isPreviewMode ? 'bg-indigo-600' : 'bg-rose-600'} text-white px-6 py-3 flex items-center justify-between text-[10px] font-black uppercase tracking-[0.2em] shadow-lg z-[100] transition-colors duration-500`}>
           <div className="flex items-center">
-            <span className="bg-white text-rose-600 px-2 py-0.5 rounded mr-3 animate-pulse">LOCAL EDITS</span>
-            Library modified. Sync to GitHub to update the public Netlify site.
+            <span className="bg-white text-indigo-950 px-2 py-0.5 rounded mr-3">
+              {isPreviewMode ? 'STUDENT PREVIEW' : 'CREATOR MODE'}
+            </span>
+            {isPreviewMode 
+              ? 'Showing exactly what students see' 
+              : isModified ? 'You have unpublished changes' : 'Library is in sync with code'}
           </div>
-          <div className="flex space-x-6">
-             <button onClick={() => setShowSettingsModal(true)} className="flex items-center hover:text-rose-200 transition-colors bg-rose-700 px-3 py-1 rounded-lg">
-               <i className="fas fa-cloud-upload-alt mr-2"></i> Publish Changes
-             </button>
-             <button onClick={resetToOriginal} className="opacity-70 hover:opacity-100 hover:text-white underline">Reset All</button>
+          <div className="flex items-center space-x-6">
+             <div className="flex items-center space-x-2">
+                <span className="opacity-70">Preview Mode</span>
+                <button 
+                  onClick={() => setIsPreviewMode(!isPreviewMode)}
+                  className={`w-12 h-6 rounded-full relative transition-all ${isPreviewMode ? 'bg-emerald-400' : 'bg-white/20'}`}
+                >
+                  <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${isPreviewMode ? 'left-7' : 'left-1'}`}></div>
+                </button>
+             </div>
+             {!isPreviewMode && (
+                <button onClick={() => setShowSettingsModal(true)} className="bg-white/20 hover:bg-white/30 px-3 py-1 rounded-lg transition-colors">
+                  <i className="fas fa-rocket mr-2"></i> Deploy
+                </button>
+             )}
           </div>
         </div>
       )}
@@ -259,7 +287,7 @@ const App: React.FC = () => {
       {/* Navbar */}
       <nav className="sticky top-0 z-50 bg-white/90 backdrop-blur-md border-b border-slate-200 px-6 py-4 flex items-center justify-between shadow-sm">
         <div className="flex items-center space-x-3 cursor-pointer" onClick={() => { setSelectedSubject(null); setSelectedFolder(null); }}>
-          <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-indigo-200 hover:scale-105 transition-transform">
+          <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-indigo-200">
             <i className="fas fa-graduation-cap text-xl"></i>
           </div>
           <h1 className="text-xl font-bold tracking-tight text-slate-800">EduSphere <span className="text-indigo-600">AI</span></h1>
@@ -269,7 +297,7 @@ const App: React.FC = () => {
           <i className="fas fa-search text-slate-400 mr-2"></i>
           <input 
             type="text" 
-            placeholder="Search subjects..." 
+            placeholder="Search resources..." 
             className="bg-transparent border-none outline-none w-full text-sm font-medium"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
@@ -277,17 +305,26 @@ const App: React.FC = () => {
         </div>
 
         <div className="flex items-center space-x-4">
-          <button onClick={() => setShowSettingsModal(true)} className={`w-11 h-11 flex items-center justify-center rounded-xl transition-all shadow-sm ${isModified ? 'bg-amber-500 text-white animate-bounce' : 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100'}`}>
-            <i className={`fas ${isModified ? 'fa-sync-alt' : 'fa-cog'}`}></i>
-          </button>
-          {selectedSubject && (
-            <button onClick={() => setShowFolderModal(true)} className="hidden sm:flex items-center bg-white border border-slate-200 text-slate-700 px-5 py-2.5 rounded-xl text-sm font-black shadow-sm hover:bg-slate-50 transition-all">
-              <i className="fas fa-folder-plus mr-2 text-indigo-500"></i> New Chapter
-            </button>
+          {isRealAdmin && (
+            <>
+              <button onClick={() => setShowSettingsModal(true)} className={`w-11 h-11 flex items-center justify-center rounded-xl transition-all shadow-sm ${isModified ? 'bg-amber-500 text-white animate-pulse' : 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100'}`}>
+                <i className={`fas ${isModified ? 'fa-sync-alt' : 'fa-cog'}`}></i>
+              </button>
+              {selectedSubject && (
+                <button onClick={() => setShowFolderModal(true)} className="hidden sm:flex items-center bg-white border border-slate-200 text-slate-700 px-5 py-2.5 rounded-xl text-sm font-black shadow-sm">
+                  <i className="fas fa-folder-plus mr-2 text-indigo-500"></i> Chapter
+                </button>
+              )}
+              <button onClick={() => setShowUploadModal(true)} className="hidden sm:flex items-center bg-indigo-600 text-white px-5 py-2.5 rounded-xl text-sm font-black shadow-lg shadow-indigo-200">
+                <i className="fas fa-plus mr-2"></i> Upload
+              </button>
+            </>
           )}
-          <button onClick={() => setShowUploadModal(true)} className="hidden sm:flex items-center bg-indigo-600 text-white px-5 py-2.5 rounded-xl text-sm font-black shadow-lg shadow-indigo-200 hover:bg-indigo-700 transition-all">
-            <i className="fas fa-plus mr-2"></i> Add Content
-          </button>
+          {(!isAdmin || isPreviewMode) && (
+            <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-4 py-2 bg-indigo-50 rounded-lg border border-indigo-100">
+              Student Portal
+            </div>
+          )}
         </div>
       </nav>
 
@@ -296,8 +333,8 @@ const App: React.FC = () => {
           <div>
             <div className="mb-12 text-center max-w-2xl mx-auto py-12">
                <div className="inline-block px-4 py-1.5 bg-indigo-50 text-indigo-600 rounded-full text-[10px] font-black uppercase tracking-widest mb-6 border border-indigo-100">Official Resource Portal</div>
-              <h2 className="text-5xl md:text-6xl font-extrabold text-slate-900 mb-6 tracking-tight">Digital Library</h2>
-              <p className="text-slate-500 text-xl leading-relaxed">Select a subject to manage folders and view learning resources.</p>
+              <h2 className="text-5xl md:text-6xl font-extrabold text-slate-900 mb-6 tracking-tight">Learning Library</h2>
+              <p className="text-slate-500 text-xl leading-relaxed">Choose your subject to access pre-loaded chapters and AI study tools.</p>
             </div>
             
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
@@ -309,20 +346,16 @@ const App: React.FC = () => {
                     onClick={() => handleSubjectClick(subject)}
                     className="bg-white p-8 rounded-[2rem] border border-slate-200 hover:border-indigo-500 hover:shadow-2xl transition-all group cursor-pointer relative overflow-hidden"
                   >
-                    <div className={`absolute top-0 right-0 p-3 px-5 ${subject.color} rounded-bl-3xl text-white font-black text-[10px] uppercase shadow-sm`}>
-                      {count} Items
+                    <div className={`absolute top-0 right-0 p-3 px-5 ${subject.color} rounded-bl-3xl text-white font-black text-[10px] uppercase`}>
+                      {count} Resources
                     </div>
-                    <div className={`w-16 h-16 ${subject.color} rounded-2xl flex items-center justify-center text-white mb-6 group-hover:rotate-6 transition-transform shadow-lg`}>
-                      {subject.icon.startsWith('fa-') ? (
-                        <i className={`fas ${subject.icon} text-3xl`}></i>
-                      ) : (
-                        <span className="text-3xl font-bold leading-none">{subject.icon}</span>
-                      )}
+                    <div className={`w-16 h-16 ${subject.color} rounded-2xl flex items-center justify-center text-white mb-6 shadow-lg`}>
+                      {subject.icon.startsWith('fa-') ? <i className={`fas ${subject.icon} text-3xl`}></i> : <span className="text-3xl font-bold">{subject.icon}</span>}
                     </div>
                     <h3 className="text-2xl font-bold mb-3">{subject.name}</h3>
                     <p className="text-slate-500 text-sm mb-6 leading-relaxed">{subject.description}</p>
                     <div className="flex items-center text-indigo-600 font-black text-sm uppercase tracking-wider">
-                      Open Library <i className="fas fa-arrow-right ml-2 text-xs"></i>
+                      Open Lessons <i className="fas fa-arrow-right ml-2 text-xs"></i>
                     </div>
                   </div>
                 );
@@ -370,7 +403,7 @@ const App: React.FC = () => {
                 {loading && (
                   <div className="absolute inset-0 z-50 bg-white/95 backdrop-blur-md flex flex-col items-center justify-center">
                     <div className="w-20 h-20 border-8 border-indigo-50 border-t-indigo-600 rounded-full animate-spin mb-6"></div>
-                    <p className="text-indigo-950 font-black text-2xl animate-pulse">AI is generating "{topic}"...</p>
+                    <p className="text-indigo-950 font-black text-2xl">Crafting your lesson on "{topic}"...</p>
                   </div>
                 )}
 
@@ -388,7 +421,7 @@ const App: React.FC = () => {
                                  <i className="fas fa-bolt mr-3"></i> AI Deep Dive
                                </button>
                                <button onClick={() => setSelectedMaterial(null)} className="text-slate-500 font-black text-sm bg-slate-100 px-6 py-3 rounded-2xl hover:bg-slate-200 transition-colors">
-                                  Exit Preview
+                                  Exit
                                </button>
                             </div>
                          </div>
@@ -400,14 +433,14 @@ const App: React.FC = () => {
                             ) : (
                               <div className="w-full h-full flex flex-col items-center justify-center text-white text-center">
                                  <i className="fas fa-eye-slash text-7xl mb-6 opacity-30"></i>
-                                 <h4 className="text-2xl font-black">No Preview Available</h4>
+                                 <h4 className="text-2xl font-black">Preview Not Available</h4>
                               </div>
                             )}
                          </div>
                       </div>
                     ) : (
                       <div className="space-y-16">
-                        {/* Chapters Grid */}
+                        {/* Chapters */}
                         {!selectedFolder && (
                           <div>
                             <div className="flex items-center justify-between mb-8">
@@ -418,25 +451,24 @@ const App: React.FC = () => {
                                  <div key={folder.id} onClick={() => setSelectedFolder(folder)} className="bg-white p-6 rounded-3xl border-2 border-slate-100 hover:border-indigo-400 hover:shadow-2xl transition-all cursor-pointer group relative">
                                     <div className="w-14 h-14 bg-indigo-50 rounded-2xl flex items-center justify-center text-indigo-500 mb-5 group-hover:bg-indigo-600 group-hover:text-white transition-all shadow-sm"><i className="fas fa-folder-open text-2xl"></i></div>
                                     <h4 className="font-black text-slate-800 text-lg mb-2">{folder.name}</h4>
-                                    <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest">Added: {folder.createdAt}</p>
-                                    
-                                    {/* DELETE BUTTON CHAPTER - FIXED INTERACTION */}
-                                    <button 
-                                      onClick={(e) => deleteFolder(folder.id, e)} 
-                                      className="absolute top-4 right-4 w-10 h-10 flex items-center justify-center bg-rose-50 text-rose-500 rounded-full opacity-0 group-hover:opacity-100 transition-all hover:bg-rose-600 hover:text-white z-30 shadow-md border border-rose-100"
-                                      title="Delete Folder"
-                                    >
-                                      <i className="fas fa-trash-alt text-sm"></i>
-                                    </button>
+                                    <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest">{folder.createdAt}</p>
+                                    {isRealAdmin && (
+                                      <button 
+                                        onClick={(e) => deleteFolder(folder.id, e)} 
+                                        className="absolute top-4 right-4 w-10 h-10 flex items-center justify-center bg-rose-50 text-rose-500 rounded-full opacity-0 group-hover:opacity-100 transition-all hover:bg-rose-600 hover:text-white z-30 shadow-md border border-rose-100"
+                                      >
+                                        <i className="fas fa-trash-alt text-sm"></i>
+                                      </button>
+                                    )}
                                  </div>
                                ))}
                             </div>
                           </div>
                         )}
                         
-                        {/* Resources Grid */}
+                        {/* Resources */}
                         <div>
-                          <h3 className="text-xs font-black text-slate-400 uppercase tracking-[0.3em] mb-8">{selectedFolder ? `Files in ${selectedFolder.name}` : 'Subject Resources'}</h3>
+                          <h3 className="text-xs font-black text-slate-400 uppercase tracking-[0.3em] mb-8">{selectedFolder ? `Files in ${selectedFolder.name}` : 'Lessons & Files'}</h3>
                           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
                             {currentLevelMaterials.map(mat => (
                               <div key={mat.id} onClick={() => setSelectedMaterial(mat)} className="bg-white p-7 rounded-[2rem] border-2 border-slate-50 hover:border-indigo-200 hover:shadow-2xl transition-all group cursor-pointer relative shadow-sm">
@@ -444,29 +476,22 @@ const App: React.FC = () => {
                                   <div className={`w-14 h-14 rounded-2xl flex items-center justify-center text-white shadow-xl ${mat.type === 'pdf' ? 'bg-red-500' : mat.type === 'video' ? 'bg-blue-500' : mat.type === 'image' ? 'bg-pink-500' : mat.type === 'link' ? 'bg-emerald-500' : 'bg-slate-500'}`}>
                                     <i className={`fas ${mat.type === 'pdf' ? 'fa-file-pdf' : mat.type === 'video' ? 'fa-play-circle' : mat.type === 'image' ? 'fa-image' : mat.type === 'link' ? 'fa-link' : 'fa-file-alt'} text-xl`}></i>
                                   </div>
-                                  
-                                  {/* DELETE BUTTON MATERIAL - FIXED INTERACTION */}
-                                  <button 
-                                    onClick={(e) => deleteMaterial(mat.id, e)} 
-                                    className="w-10 h-10 flex items-center justify-center bg-rose-50 text-rose-500 rounded-full opacity-0 group-hover:opacity-100 transition-all z-30 shadow-md hover:bg-rose-600 hover:text-white border border-rose-100"
-                                    title="Delete File"
-                                  >
-                                    <i className="fas fa-trash-alt text-sm"></i>
-                                  </button>
+                                  {isRealAdmin && (
+                                    <button 
+                                      onClick={(e) => deleteMaterial(mat.id, e)} 
+                                      className="w-10 h-10 flex items-center justify-center bg-rose-50 text-rose-500 rounded-full opacity-0 group-hover:opacity-100 transition-all z-30 shadow-md hover:bg-rose-600 hover:text-white border border-rose-100"
+                                    >
+                                      <i className="fas fa-trash-alt text-sm"></i>
+                                    </button>
+                                  )}
                                 </div>
                                 <h4 className="font-black text-slate-800 text-lg mb-2 line-clamp-1">{mat.title}</h4>
-                                <div className="flex items-center space-x-3">
+                                <div className="flex items-center justify-between">
                                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{mat.type}</span>
-                                   {INITIAL_MATERIALS.some(im => im.id === mat.id) && <span className="bg-indigo-50 text-indigo-600 px-2.5 py-1 rounded-full text-[8px] font-black uppercase border border-indigo-100">CORE</span>}
+                                   {mat.url?.startsWith('blob:') && <span className="bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full text-[8px] font-black uppercase">Local Only</span>}
                                 </div>
                               </div>
                             ))}
-                            {currentLevelMaterials.length === 0 && (
-                              <div className="col-span-full py-20 text-center border-4 border-dashed border-slate-100 rounded-[2rem]">
-                                 <i className="fas fa-folder-open text-6xl text-slate-200 mb-6"></i>
-                                 <p className="text-slate-400 font-bold uppercase tracking-widest text-xs">No resources found</p>
-                              </div>
-                            )}
                           </div>
                         </div>
                       </div>
@@ -474,39 +499,41 @@ const App: React.FC = () => {
                   </div>
                 )}
 
-                {/* AI Content Containers */}
+                {/* AI Views */}
                 {!loading && activeTab === 'video' && (
                   <div className="w-full flex flex-col items-center">
                     {videoUrl ? (
                       <div className="w-full aspect-video rounded-[3rem] overflow-hidden shadow-2xl bg-black border-8 border-slate-100">
                         <video src={videoUrl} controls className="w-full h-full" autoPlay />
                       </div>
-                    ) : <div className="text-slate-400 font-black py-20 text-center uppercase tracking-widest">Generate an AI Deep Dive video from a resource first.</div>}
+                    ) : <div className="text-slate-400 font-black py-20 text-center uppercase tracking-widest">Select a resource and click "AI Deep Dive" to generate a video.</div>}
                   </div>
                 )}
-                {!loading && activeTab === 'mindmap' && (mindMapData ? <MindMapViewer data={mindMapData} /> : <div className="text-slate-400 font-black py-20 text-center uppercase tracking-widest">No Mind Map data.</div>)}
+                {!loading && activeTab === 'mindmap' && (mindMapData ? <MindMapViewer data={mindMapData} /> : <div className="text-slate-400 font-black py-20 text-center uppercase tracking-widest">No Mind Map generated.</div>)}
                 {!loading && activeTab === 'audio' && (<AudioPlayer audioData={audioData} />)}
-                {!loading && activeTab === 'slides' && (slides.length > 0 ? <SlideViewer slides={slides} /> : <div className="text-slate-400 font-black py-20 text-center uppercase tracking-widest">No Slides data.</div>)}
+                {!loading && activeTab === 'slides' && (slides.length > 0 ? <SlideViewer slides={slides} /> : <div className="text-slate-400 font-black py-20 text-center uppercase tracking-widest">No Slides available.</div>)}
                 {!loading && activeTab === 'notes' && (notes ? (
                   <div className="prose prose-slate max-w-4xl mx-auto bg-white p-14 rounded-[3rem] border border-slate-100 shadow-2xl overflow-y-auto max-h-[750px] custom-scrollbar">
                     <h2 className="text-5xl font-black text-indigo-950 mb-10 border-b-4 border-indigo-50 pb-6">{notes.title}</h2>
                     <div className="whitespace-pre-wrap leading-relaxed text-slate-700 text-xl">{notes.body}</div>
                   </div>
-                ) : <div className="text-slate-400 font-black py-20 text-center uppercase tracking-widest">No Notes generated yet.</div>)}
+                ) : <div className="text-slate-400 font-black py-20 text-center uppercase tracking-widest">No Notes generated.</div>)}
               </div>
             </div>
           </div>
         )}
       </main>
 
-      {/* PUBLISH / SETTINGS MODAL */}
-      {showSettingsModal && (
+      {/* DEPLOYMENT CONSOLE */}
+      {showSettingsModal && isRealAdmin && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center p-6 bg-slate-950/80 backdrop-blur-xl">
-          <div className="bg-white w-full max-w-4xl rounded-[3rem] shadow-2xl overflow-hidden animate-in zoom-in-95 max-h-[90vh] flex flex-col border border-white/20">
+          <div className="bg-white w-full max-w-4xl rounded-[3rem] shadow-2xl overflow-hidden animate-in zoom-in-95 max-h-[90vh] flex flex-col">
             <div className="px-10 py-10 bg-indigo-600 text-white flex items-center justify-between">
                <div>
-                  <h3 className="text-3xl font-black mb-2 text-white">Publish Changes to GitHub</h3>
-                  <p className="text-indigo-100 text-sm opacity-80 font-bold uppercase tracking-widest">Update your school portal for everyone</p>
+                  <h3 className="text-3xl font-black mb-2 flex items-center">
+                    <i className="fas fa-terminal mr-4 opacity-50"></i> Deployment Console
+                  </h3>
+                  <p className="text-indigo-100 text-sm font-bold uppercase tracking-widest">Prepare your portal for public access</p>
                </div>
                <button onClick={() => setShowSettingsModal(false)} className="w-12 h-12 flex items-center justify-center bg-white/20 rounded-full hover:bg-white/40 transition-colors">
                   <i className="fas fa-times text-xl"></i>
@@ -515,68 +542,107 @@ const App: React.FC = () => {
             
             <div className="p-10 flex-1 overflow-y-auto space-y-10 custom-scrollbar">
                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                  <div className={`p-8 rounded-[2.5rem] border-4 ${isModified ? 'bg-amber-50 border-amber-200' : 'bg-emerald-50 border-emerald-200'}`}>
-                    <h4 className={`text-xl font-black mb-4 flex items-center ${isModified ? 'text-amber-950' : 'text-emerald-950'}`}>
-                      <i className={`fas ${isModified ? 'fa-pencil-ruler' : 'fa-check-double'} mr-4`}></i> 
-                      {isModified ? 'Draft Saved Locally' : 'Synced with Files'}
-                    </h4>
-                    <p className={`text-sm leading-relaxed mb-6 font-medium ${isModified ? 'text-amber-800' : 'text-emerald-800'}`}>
-                      {isModified 
-                        ? 'Changes you make in the browser only you can see. To make them public, copy the code to constants.tsx.' 
-                        : 'Your browser matches exactly what is in your school files.'}
-                    </p>
-                    <div className="bg-white/60 p-4 rounded-2xl text-[10px] font-black text-slate-600 uppercase tracking-widest flex justify-between">
-                      <span>Chapters: {folders.length}</span>
-                      <span>Materials: {materials.length}</span>
+                  <div className="bg-emerald-50 p-8 rounded-[2.5rem] border-4 border-emerald-200">
+                    <div className="flex items-center justify-between mb-4">
+                      <h4 className="text-xl font-black text-emerald-950">1. Permanent Link</h4>
+                      <i className="fas fa-share-alt text-emerald-400 text-xl"></i>
                     </div>
+                    <p className="text-sm text-emerald-800 leading-relaxed mb-6 font-medium">
+                      Share this link with students. Note: They only see what you have <strong>synced</strong> to the code.
+                    </p>
+                    <button 
+                      onClick={() => {
+                        const baseUrl = window.location.origin + window.location.pathname;
+                        navigator.clipboard.writeText(baseUrl);
+                        alert("Student Portal Link Copied!");
+                      }}
+                      className="w-full bg-emerald-600 text-white py-4 rounded-2xl font-black text-sm shadow-xl hover:bg-emerald-700 transition-all flex items-center justify-center"
+                    >
+                      <i className="fas fa-link mr-3"></i> Copy Public Link
+                    </button>
                   </div>
 
                   <div className="bg-indigo-50 p-8 rounded-[2.5rem] border-4 border-indigo-200">
-                    <h4 className="text-xl font-black text-indigo-950 mb-4 flex items-center">
-                      <i className="fas fa-terminal mr-4"></i> Get Export Code
-                    </h4>
+                    <div className="flex items-center justify-between mb-4">
+                      <h4 className="text-xl font-black text-indigo-950">2. Sync to GitHub</h4>
+                      <i className="fas fa-cloud-upload-alt text-indigo-400 text-xl"></i>
+                    </div>
                     <p className="text-sm text-indigo-800 leading-relaxed mb-6 font-medium">
-                      Copy the code below, paste it into <strong>constants.tsx</strong> on GitHub, and Netlify will update.
+                      Copy the code below, paste it into <strong>constants.tsx</strong>, and push to GitHub to make your uploads public.
                     </p>
                     <button 
                       onClick={() => {
                         navigator.clipboard.writeText(generateConstantsCode());
-                        alert("COPIED! Now:\n1. Open constants.tsx\n2. Replace the data arrays\n3. Push to GitHub");
+                        alert("Code Copied! Now paste it into constants.tsx and push to GitHub.");
                       }}
                       className="w-full bg-indigo-600 text-white py-4 rounded-2xl font-black text-sm shadow-xl hover:bg-indigo-700 transition-all flex items-center justify-center"
                     >
-                      <i className="fas fa-copy mr-3"></i> Copy to Clipboard
+                      <i className="fas fa-copy mr-3"></i> Copy Data Code
                     </button>
                   </div>
                </div>
 
+               <div className="p-8 bg-slate-50 border-2 border-slate-100 rounded-[2rem]">
+                  <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4">Deployment Checklist</h4>
+                  <ul className="space-y-3 text-sm font-medium text-slate-600">
+                    <li className="flex items-center"><i className="fas fa-check-circle text-emerald-500 mr-3"></i> Use Web Links for permanence (e.g. YouTube/Drive)</li>
+                    <li className="flex items-center"><i className="fas fa-check-circle text-emerald-500 mr-3"></i> Replace arrays in constants.tsx with the copied code</li>
+                    <li className="flex items-center"><i className="fas fa-check-circle text-emerald-500 mr-3"></i> Deploy to Netlify via GitHub Push</li>
+                  </ul>
+               </div>
+
                <div className="space-y-6">
-                  <div className="flex items-center justify-between">
-                    <h4 className="text-xs font-black text-slate-400 uppercase tracking-[0.4em]">Project Code Snippet</h4>
-                  </div>
+                  <h4 className="text-xs font-black text-slate-400 uppercase tracking-[0.4em]">Current JSON Data State</h4>
                   <pre className="bg-slate-950 text-indigo-400 p-8 rounded-[2.5rem] text-xs font-mono overflow-x-auto border-4 border-slate-800 shadow-2xl max-h-60 overflow-y-auto custom-scrollbar">
                     {generateConstantsCode()}
                   </pre>
                </div>
 
-               <div className="pt-6 flex space-x-6 border-t border-slate-100">
-                  <button onClick={resetToOriginal} className="flex-1 border-4 border-rose-50 text-rose-500 py-4 rounded-2xl text-xs font-black hover:bg-rose-50 transition-all uppercase tracking-widest">Reset Browser State</button>
-                  <button onClick={handleOpenKeySelector} className="flex-1 bg-slate-100 text-slate-600 py-4 rounded-2xl text-xs font-black hover:bg-slate-200 transition-all uppercase tracking-widest">Update API Key</button>
+               <div className="pt-6 border-t border-slate-100 flex justify-between items-center">
+                  <button onClick={resetToOriginal} className="text-rose-500 text-[10px] font-black uppercase tracking-widest hover:underline">Discard Local Edits</button>
+                  <p className="text-slate-400 text-[9px] font-black uppercase">EduSphere v4.1 Sync Logic</p>
                </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* New Folder & Upload Modals */}
+      {/* ADMIN LOGIN */}
+      {showAdminLogin && (
+        <div className="fixed inset-0 z-[400] flex items-center justify-center p-6 bg-slate-950/90 backdrop-blur-xl animate-in fade-in">
+           <div className={`bg-white w-full max-w-sm rounded-[2.5rem] shadow-2xl p-10 transform transition-all duration-300 ${loginError ? 'translate-x-2 border-4 border-rose-500' : 'border-4 border-white'}`}>
+              <div className="text-center mb-8">
+                 <div className="w-16 h-16 bg-indigo-100 text-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                    <i className="fas fa-user-shield text-2xl"></i>
+                 </div>
+                 <h3 className="text-2xl font-black text-slate-900">Creator Access</h3>
+                 <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-2">Enter Passcode</p>
+              </div>
+              <form onSubmit={handleAdminAuth} className="space-y-6">
+                 <input 
+                    type="password" 
+                    placeholder="••••••••" 
+                    autoFocus
+                    className="w-full bg-slate-100 border-none rounded-2xl px-6 py-5 text-center text-2xl font-black tracking-widest focus:ring-4 focus:ring-indigo-500/20"
+                    value={adminPasscode}
+                    onChange={(e) => setAdminPasscode(e.target.value)}
+                 />
+                 <button type="submit" className="w-full bg-indigo-600 text-white py-5 rounded-2xl font-black shadow-xl hover:bg-indigo-700 transition-all">Unlock</button>
+                 <button type="button" onClick={() => setShowAdminLogin(false)} className="w-full text-slate-400 font-black text-[10px] uppercase">Cancel</button>
+              </form>
+           </div>
+        </div>
+      )}
+
+      {/* CONTENT MODALS */}
       {showFolderModal && (
         <div className="fixed inset-0 z-[300] flex items-center justify-center p-6 bg-slate-950/80 backdrop-blur-md">
-          <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl p-10 animate-in zoom-in-95">
+          <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl p-10">
             <h3 className="text-3xl font-black text-slate-900 mb-8">New Chapter</h3>
             <form onSubmit={handleCreateFolder} className="space-y-8">
-               <input name="name" required autoFocus type="text" placeholder="e.g. Chapter 1: Introduction" className="w-full bg-slate-50 border-4 border-slate-100 rounded-2xl px-6 py-5 text-sm font-bold focus:border-indigo-500 outline-none transition-all" />
-               <button type="submit" className="w-full bg-indigo-600 text-white py-6 rounded-2xl font-black shadow-xl hover:bg-indigo-700 transition-all uppercase tracking-widest">Create Chapter</button>
-               <button type="button" onClick={() => setShowFolderModal(false)} className="w-full py-2 text-slate-400 font-black text-xs uppercase">Cancel</button>
+               <input name="name" required autoFocus type="text" placeholder="Chapter Name" className="w-full bg-slate-50 border-4 border-slate-100 rounded-2xl px-6 py-5 text-sm font-bold outline-none" />
+               <button type="submit" className="w-full bg-indigo-600 text-white py-6 rounded-2xl font-black shadow-xl hover:bg-indigo-700">Create</button>
+               <button type="button" onClick={() => setShowFolderModal(false)} className="w-full py-2 text-slate-400 font-black text-xs uppercase text-center">Cancel</button>
             </form>
           </div>
         </div>
@@ -596,22 +662,39 @@ const App: React.FC = () => {
                </div>
                <input name="title" required placeholder="Resource Title" className="w-full bg-slate-50 border-4 border-slate-100 rounded-2xl px-6 py-5 text-sm font-bold" />
                {uploadTab === 'file' ? (
-                 <div onClick={() => fileInputRef.current?.click()} className="border-4 border-dashed border-slate-200 rounded-[2rem] p-10 text-center cursor-pointer hover:bg-indigo-50 hover:border-indigo-200 transition-all">
+                 <div onClick={() => fileInputRef.current?.click()} className="border-4 border-dashed border-slate-200 rounded-[2rem] p-10 text-center cursor-pointer hover:bg-indigo-50">
                     <input type="file" ref={fileInputRef} className="hidden" onChange={(e) => setSelectedFile(e.target.files?.[0] || null)} />
                     <i className="fas fa-cloud-upload-alt text-5xl text-slate-300 mb-4"></i>
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{selectedFile ? selectedFile.name : 'Select PDF or Image'}</p>
+                    <p className="text-[10px] font-black text-slate-400 uppercase">{selectedFile ? selectedFile.name : 'Select PDF/Image/Video'}</p>
+                    <p className="text-[8px] text-amber-600 font-bold mt-2 italic">* Use "Web Link" for permanent sharing</p>
                  </div>
                ) : (
-                 <input type="url" required placeholder="Paste Link (e.g. YouTube/Drive)" value={pastedLink} onChange={(e) => setPastedLink(e.target.value)} className="w-full bg-slate-50 border-4 border-slate-100 rounded-2xl px-6 py-5 text-sm font-bold" />
+                 <input type="url" required placeholder="Paste YouTube/Drive/Public Link" value={pastedLink} onChange={(e) => setPastedLink(e.target.value)} className="w-full bg-slate-50 border-4 border-slate-100 rounded-2xl px-6 py-5 text-sm font-bold" />
                )}
-               <button type="submit" className="w-full bg-indigo-600 text-white py-6 rounded-2xl font-black shadow-xl hover:bg-indigo-700 transition-all uppercase tracking-widest">Confirm Upload</button>
+               <button type="submit" className="w-full bg-indigo-600 text-white py-6 rounded-2xl font-black shadow-xl hover:bg-indigo-700 transition-all">Confirm Upload</button>
             </form>
           </div>
         </div>
       )}
 
-      <footer className="bg-white border-t border-slate-200 p-10 text-center mt-auto">
-        <p className="text-slate-400 font-black text-[10px] tracking-[0.4em] uppercase">EduSphere AI • Version 4.0 Stable</p>
+      {/* Footer */}
+      <footer className="bg-white border-t border-slate-200 p-12 text-center mt-auto">
+        <div className="flex flex-col items-center space-y-6">
+          <p className="text-slate-400 font-black text-[10px] tracking-[0.4em] uppercase">EduSphere AI • Education Portal</p>
+          <div className="flex items-center space-x-6">
+            {!isAdmin ? (
+              <button 
+                onClick={() => setShowAdminLogin(true)} 
+                className="group flex items-center space-x-3 bg-slate-50 hover:bg-indigo-600 px-6 py-3 rounded-2xl transition-all border border-slate-200 shadow-sm"
+              >
+                <i className="fas fa-lock text-slate-300 group-hover:text-white"></i>
+                <span className="text-xs font-black text-slate-500 group-hover:text-white uppercase tracking-widest">Admin Entry</span>
+              </button>
+            ) : (
+              <button onClick={handleLogout} className="text-xs font-black text-slate-400 hover:text-rose-600 uppercase tracking-widest underline underline-offset-4">Logout Creator Mode</button>
+            )}
+          </div>
+        </div>
       </footer>
     </div>
   );
