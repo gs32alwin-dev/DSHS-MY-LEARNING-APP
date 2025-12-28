@@ -1,0 +1,7 @@
+{
+  "name": "EduSphere AI",
+  "description": "A comprehensive AI-powered learning platform providing students with mind maps, audio summaries, video modules, and interactive notes for all subjects.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
