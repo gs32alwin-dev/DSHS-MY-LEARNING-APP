@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { SUBJECTS, CONTENT_TABS } from './constants.tsx';
+import { SUBJECTS, CONTENT_TABS, INITIAL_FOLDERS, INITIAL_MATERIALS } from './constants.tsx';
 import { Subject, ContentType, MindMapNode, StudyNote, Slide, Material, Folder } from './types.ts';
 import { geminiService } from './services/geminiService.ts';
 import MindMapViewer from './components/MindMapViewer.tsx';
@@ -18,71 +18,126 @@ const App: React.FC = () => {
   // App State
   const [loading, setLoading] = useState(false);
   const [showUploadModal, setShowUploadModal] = useState(false);
-  const [uploadTab, setUploadTab] = useState<'file' | 'link'>('file');
   const [showFolderModal, setShowFolderModal] = useState(false);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [uploadTab, setUploadTab] = useState<'file' | 'link'>('file');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [pastedLink, setPastedLink] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [hasApiKey, setHasApiKey] = useState(true);
 
+  // AI Content State
+  const [mindMapData, setMindMapData] = useState<MindMapNode | null>(null);
+  const [notes, setNotes] = useState<StudyNote | null>(null);
+  const [slides, setSlides] = useState<Slide[]>([]);
+  const [audioData, setAudioData] = useState<Uint8Array | null>(null);
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+
+  // Initialize from Seed Data + LocalStorage
   const [folders, setFolders] = useState<Folder[]>(() => {
     const saved = localStorage.getItem('edusphere_folders');
-    return saved ? JSON.parse(saved) : [];
+    const local = saved ? JSON.parse(saved) : [];
+    const merged = [...INITIAL_FOLDERS];
+    local.forEach((l: Folder) => {
+        if (!merged.find(m => m.id === l.id)) merged.push(l);
+    });
+    return merged;
   });
 
   const [materials, setMaterials] = useState<Material[]>(() => {
     const saved = localStorage.getItem('edusphere_materials');
-    return saved ? JSON.parse(saved) : [];
+    const local = saved ? JSON.parse(saved) : [];
+    const merged = [...INITIAL_MATERIALS];
+    local.forEach((l: Material) => {
+        if (!merged.find(m => m.id === l.id)) merged.push(l);
+    });
+    return merged;
   });
 
-  // Persistence
+  // Persistence for LOCAL testing (not for students)
   useEffect(() => {
-    localStorage.setItem('edusphere_materials', JSON.stringify(materials));
-    localStorage.setItem('edusphere_folders', JSON.stringify(folders));
+    const localFolders = folders.filter(f => !INITIAL_FOLDERS.find(ifld => ifld.id === f.id));
+    const localMaterials = materials.filter(m => !INITIAL_MATERIALS.find(imat => imat.id === m.id));
+    localStorage.setItem('edusphere_folders', JSON.stringify(localFolders));
+    localStorage.setItem('edusphere_materials', JSON.stringify(localMaterials));
   }, [materials, folders]);
 
-  const filteredSubjects = SUBJECTS.filter(s => 
-    s.name.toLowerCase().includes(searchQuery.toLowerCase())
+  // API Key Check
+  useEffect(() => {
+    const checkApiKey = async () => {
+      if (typeof window !== 'undefined' && (window as any).aistudio) {
+        const has = await (window as any).aistudio.hasSelectedApiKey();
+        setHasApiKey(has);
+      }
+    };
+    checkApiKey();
+  }, []);
+
+  const filteredSubjects = SUBJECTS.filter(s =>
+    s.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    s.description.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const loadAIContent = async (subject: Subject, selectedTopic: string) => {
+  const handleOpenKeySelector = async () => {
+    if (typeof window !== 'undefined' && (window as any).aistudio) {
+      await (window as any).aistudio.openSelectKey();
+      setHasApiKey(true);
+    }
+  };
+
+  const handleAnalyzeMaterial = async (material: Material) => {
+    setLoading(true);
+    setTopic(material.title);
+    setSelectedMaterial(null);
+    setActiveTab('notes');
+
+    try {
+      const [mm, nt, sl] = await Promise.all([
+        geminiService.generateMindMap(material.title),
+        geminiService.generateNotes(material.title),
+        geminiService.generateSlides(material.title)
+      ]);
+      
+      setMindMapData(mm);
+      setNotes(nt);
+      setSlides(sl);
+
+      const audio = await geminiService.generateAudioSummary(nt.body);
+      setAudioData(audio);
+
+      const video = await geminiService.generateVideoLecture(material.title);
+      setVideoUrl(video);
+    } catch (error) {
+      console.error("AI Analysis failed:", error);
+      alert("AI Analysis error. Check your API key.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadAIContentFromTopic = async (subject: Subject, selectedTopic: string) => {
     setLoading(true);
     setTopic(selectedTopic);
     setSelectedMaterial(null);
     try {
       const [mm, nt, sl] = await Promise.all([
-        geminiService.generateMindMap(subject.name, selectedTopic),
-        geminiService.generateNotes(subject.name, selectedTopic),
-        geminiService.generateSlides(subject.name, selectedTopic)
+        geminiService.generateMindMap(selectedTopic),
+        geminiService.generateNotes(selectedTopic),
+        geminiService.generateSlides(selectedTopic)
       ]);
       setMindMapData(mm);
       setNotes(nt);
       setSlides(sl);
       const audio = await geminiService.generateAudioSummary(nt.body);
       setAudioData(audio);
-      
-      if (selectedFolder) {
-        const aiMaterial: Material = {
-          id: Math.random().toString(36).substr(2, 9),
-          subjectId: subject.id,
-          folderId: selectedFolder.id,
-          title: `AI Notes: ${selectedTopic}`,
-          type: 'doc',
-          date: new Date().toLocaleDateString(),
-        };
-        setMaterials(prev => [aiMaterial, ...prev]);
-      }
+      const video = await geminiService.generateVideoLecture(selectedTopic);
+      setVideoUrl(video);
     } catch (error) {
-      console.error("Error loading content:", error);
+      console.error("AI Generation failed:", error);
     } finally {
       setLoading(false);
     }
   };
-
-  // Content Generation State
-  const [mindMapData, setMindMapData] = useState<MindMapNode | null>(null);
-  const [notes, setNotes] = useState<StudyNote | null>(null);
-  const [slides, setSlides] = useState<Slide[]>([]);
-  const [audioData, setAudioData] = useState<Uint8Array | null>(null);
 
   const handleSubjectClick = (s: Subject) => {
     setSelectedSubject(s);
@@ -96,7 +151,7 @@ const App: React.FC = () => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
     const newFolder: Folder = {
-      id: Math.random().toString(36).substr(2, 9),
+      id: "fld-" + Math.random().toString(36).substr(2, 9),
       subjectId: selectedSubject?.id || 'general',
       name: (formData.get('name') as string) || 'New Chapter',
       createdAt: new Date().toLocaleDateString(),
@@ -123,7 +178,7 @@ const App: React.FC = () => {
     }
 
     const newMaterial: Material = {
-      id: Math.random().toString(36).substr(2, 9),
+      id: "mat-" + Math.random().toString(36).substr(2, 9),
       subjectId: selectedSubject?.id || 'general',
       folderId: selectedFolder?.id,
       title: (formData.get('title') as string) || (uploadTab === 'file' ? selectedFile?.name : pastedLink) || 'Untitled',
@@ -140,13 +195,15 @@ const App: React.FC = () => {
 
   const deleteMaterial = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    setMaterials(materials.filter(m => m.id !== id));
-    if (selectedMaterial?.id === id) setSelectedMaterial(null);
+    if (confirm("Delete this material?")) {
+      setMaterials(materials.filter(m => m.id !== id));
+      if (selectedMaterial?.id === id) setSelectedMaterial(null);
+    }
   };
 
   const deleteFolder = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (confirm("Are you sure? This will not delete the files, but they will become uncategorized.")) {
+    if (confirm("Delete this chapter?")) {
       setFolders(folders.filter(f => f.id !== id));
       setMaterials(materials.map(m => m.folderId === id ? { ...m, folderId: undefined } : m));
       if (selectedFolder?.id === id) setSelectedFolder(null);
@@ -169,6 +226,15 @@ const App: React.FC = () => {
     }
   };
 
+  // Helper to generate code for constants.tsx
+  const generateConstantsCode = () => {
+    return `// Copy this into INITIAL_FOLDERS in constants.tsx
+export const INITIAL_FOLDERS: Folder[] = ${JSON.stringify(folders, null, 2)};
+
+// Copy this into INITIAL_MATERIALS in constants.tsx
+export const INITIAL_MATERIALS: Material[] = ${JSON.stringify(materials, null, 2)};`;
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col">
       {/* Navbar */}
@@ -180,11 +246,11 @@ const App: React.FC = () => {
           <h1 className="text-xl font-bold tracking-tight text-slate-800">EduSphere <span className="text-indigo-600">AI</span></h1>
         </div>
         
-        <div className="hidden md:flex items-center bg-slate-100 rounded-full px-4 py-2 w-96 border border-slate-200">
+        <div className="hidden lg:flex items-center bg-slate-100 rounded-full px-4 py-2 w-80 border border-slate-200">
           <i className="fas fa-search text-slate-400 mr-2"></i>
           <input 
             type="text" 
-            placeholder="Search files or folders..." 
+            placeholder="Search subjects or topics..." 
             className="bg-transparent border-none outline-none w-full text-sm"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
@@ -192,23 +258,17 @@ const App: React.FC = () => {
         </div>
 
         <div className="flex items-center space-x-4">
+          <button onClick={() => setShowSettingsModal(true)} className="w-10 h-10 flex items-center justify-center bg-indigo-50 text-indigo-600 rounded-lg hover:bg-indigo-100 transition-colors" title="Deployment Center">
+            <i className="fas fa-tools"></i>
+          </button>
           {selectedSubject && (
-            <button 
-              onClick={() => setShowFolderModal(true)}
-              className="hidden sm:flex items-center bg-white border border-slate-200 text-slate-600 px-4 py-2 rounded-lg text-sm font-bold shadow-sm hover:bg-slate-50 transition-all"
-            >
+            <button onClick={() => setShowFolderModal(true)} className="hidden sm:flex items-center bg-white border border-slate-200 text-slate-600 px-4 py-2 rounded-lg text-sm font-bold shadow-sm hover:bg-slate-50 transition-all">
               <i className="fas fa-folder-plus mr-2 text-indigo-500"></i> New Chapter
             </button>
           )}
-          <button 
-            onClick={() => setShowUploadModal(true)}
-            className="hidden sm:flex items-center bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition-all active:scale-95"
-          >
+          <button onClick={() => setShowUploadModal(true)} className="hidden sm:flex items-center bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition-all active:scale-95">
             <i className="fas fa-plus mr-2"></i> Add Content
           </button>
-          <div className="w-9 h-9 bg-slate-200 rounded-full border border-slate-300 overflow-hidden cursor-pointer">
-            <img src="https://api.dicebear.com/7.x/avataaars/svg?seed=student" alt="Avatar" />
-          </div>
         </div>
       </nav>
 
@@ -216,8 +276,9 @@ const App: React.FC = () => {
         {!selectedSubject ? (
           <div>
             <div className="mb-10 text-center max-w-2xl mx-auto py-10">
-              <h2 className="text-5xl font-extrabold text-slate-900 mb-6 tracking-tight">Welcome, Student!</h2>
-              <p className="text-slate-500 text-xl leading-relaxed">Select your subject to access your chapters, videos, and AI tools.</p>
+               <div className="inline-block px-4 py-1.5 bg-indigo-50 text-indigo-600 rounded-full text-xs font-black uppercase tracking-widest mb-4">Official Student Portal</div>
+              <h2 className="text-5xl font-extrabold text-slate-900 mb-6 tracking-tight">Your Digital Library</h2>
+              <p className="text-slate-500 text-xl leading-relaxed">Choose your subject below to access pre-loaded chapters and AI study tools.</p>
             </div>
             
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
@@ -230,15 +291,19 @@ const App: React.FC = () => {
                     className="bg-white p-8 rounded-3xl border border-slate-200 hover:border-indigo-500 hover:shadow-2xl hover:shadow-indigo-100 transition-all group cursor-pointer relative overflow-hidden"
                   >
                     <div className={`absolute top-0 right-0 p-3 px-5 ${subject.color} rounded-bl-3xl text-white font-bold text-xs shadow-sm`}>
-                      {count} Files
+                      {count} Resources
                     </div>
                     <div className={`w-16 h-16 ${subject.color} rounded-2xl flex items-center justify-center text-white mb-6 group-hover:rotate-6 transition-transform shadow-xl`}>
-                      <i className={`fas ${subject.icon} text-3xl`}></i>
+                      {subject.icon.startsWith('fa-') ? (
+                        <i className={`fas ${subject.icon} text-3xl`}></i>
+                      ) : (
+                        <span className="text-3xl font-bold leading-none">{subject.icon}</span>
+                      )}
                     </div>
                     <h3 className="text-2xl font-bold mb-3">{subject.name}</h3>
                     <p className="text-slate-500 text-sm mb-6">{subject.description}</p>
                     <div className="flex items-center text-indigo-600 font-bold text-sm">
-                      Open Library <i className="fas fa-arrow-right ml-2 text-xs"></i>
+                      Enter Classroom <i className="fas fa-arrow-right ml-2 text-xs"></i>
                     </div>
                   </div>
                 );
@@ -247,75 +312,38 @@ const App: React.FC = () => {
           </div>
         ) : (
           <div className="flex flex-col h-full animate-in fade-in slide-in-from-bottom-4 duration-500">
-            {/* Subject Header & Breadcrumbs */}
+            {/* Header */}
             <div className="flex flex-col md:flex-row md:items-center justify-between mb-8 space-y-4 md:space-y-0">
               <div className="flex items-center space-x-6">
-                <button 
-                  onClick={() => {
-                    if (selectedFolder) setSelectedFolder(null);
-                    else setSelectedSubject(null);
-                  }}
-                  className="w-12 h-12 flex items-center justify-center bg-white border border-slate-200 rounded-2xl hover:bg-slate-50 transition-colors shadow-sm"
-                >
+                <button onClick={() => selectedFolder ? setSelectedFolder(null) : setSelectedSubject(null)} className="w-12 h-12 flex items-center justify-center bg-white border border-slate-200 rounded-2xl hover:bg-slate-50 transition-colors shadow-sm">
                   <i className="fas fa-chevron-left text-slate-400"></i>
                 </button>
                 <div className="flex flex-col">
-                  <div className="flex items-center space-x-2 text-slate-400 text-sm font-bold uppercase tracking-widest mb-1">
-                    <span className="hover:text-indigo-600 cursor-pointer" onClick={() => setSelectedSubject(null)}>Subjects</span>
-                    <i className="fas fa-chevron-right text-[10px]"></i>
-                    <span className="hover:text-indigo-600 cursor-pointer" onClick={() => setSelectedFolder(null)}>{selectedSubject.name}</span>
-                    {selectedFolder && (
-                      <>
-                        <i className="fas fa-chevron-right text-[10px]"></i>
-                        <span className="text-slate-900">{selectedFolder.name}</span>
-                      </>
-                    )}
-                  </div>
-                  <h2 className="text-4xl font-extrabold text-slate-900 tracking-tight">
-                    {selectedFolder ? selectedFolder.name : selectedSubject.name}
-                  </h2>
+                  <h2 className="text-4xl font-extrabold text-slate-900 tracking-tight">{selectedFolder ? selectedFolder.name : selectedSubject.name}</h2>
                 </div>
               </div>
 
               <div className="flex items-center space-x-3 bg-white p-2 rounded-2xl shadow-sm border border-slate-100">
                 <input 
                   type="text" 
-                  placeholder="Topic for AI help..." 
+                  placeholder="Ask AI about a topic..." 
                   className="bg-transparent px-4 py-2 text-sm focus:outline-none w-48 font-medium"
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      loadAIContent(selectedSubject, (e.target as HTMLInputElement).value);
-                      (e.target as HTMLInputElement).value = '';
-                    }
-                  }}
+                  onKeyDown={(e) => { if (e.key === 'Enter') loadAIContentFromTopic(selectedSubject, (e.target as HTMLInputElement).value); }}
                 />
-                <button 
-                  onClick={() => {
-                    const el = document.querySelector('input[placeholder="Topic for AI help..."]') as HTMLInputElement;
-                    if (el.value) loadAIContent(selectedSubject, el.value);
-                  }}
-                  className="bg-indigo-600 text-white px-5 py-2 rounded-xl text-sm font-bold shadow-lg shadow-indigo-200 hover:bg-indigo-700 transition-all active:scale-95"
-                >
-                  Ask AI
+                <button onClick={() => { const el = document.querySelector('input[placeholder="Ask AI about a topic..."]') as HTMLInputElement; if (el.value) loadAIContentFromTopic(selectedSubject, el.value); }} className="bg-indigo-600 text-white px-5 py-2 rounded-xl text-sm font-bold shadow-lg hover:bg-indigo-700 transition-all">
+                  Generate
                 </button>
               </div>
             </div>
 
-            {/* Main Content Area */}
+            {/* Content Display */}
             <div className="bg-white rounded-[2rem] border border-slate-200 shadow-xl overflow-hidden flex flex-col flex-1">
               <div className="flex flex-wrap border-b border-slate-100 bg-slate-50/50 p-2">
                 {CONTENT_TABS.map(tab => (
                   <button
                     key={tab.id}
-                    onClick={() => {
-                      setActiveTab(tab.id as ContentType);
-                      setSelectedMaterial(null);
-                    }}
-                    className={`flex items-center space-x-2 py-3 px-6 m-1 text-sm font-bold rounded-xl transition-all ${
-                      activeTab === tab.id 
-                      ? 'bg-white text-indigo-600 shadow-md ring-1 ring-slate-200' 
-                      : 'text-slate-400 hover:text-slate-600 hover:bg-slate-100'
-                    }`}
+                    onClick={() => { setActiveTab(tab.id as ContentType); setSelectedMaterial(null); }}
+                    className={`flex items-center space-x-2 py-3 px-6 m-1 text-sm font-bold rounded-xl transition-all ${activeTab === tab.id ? 'bg-white text-indigo-600 shadow-md ring-1 ring-slate-200' : 'text-slate-400 hover:text-slate-600'}`}
                   >
                     <i className={`fas ${tab.icon}`}></i>
                     <span>{tab.label}</span>
@@ -326,342 +354,228 @@ const App: React.FC = () => {
               <div className="p-8 min-h-[550px] flex flex-col relative bg-[radial-gradient(#e2e8f0_1px,transparent_1px)] [background-size:24px_24px]">
                 {loading && (
                   <div className="absolute inset-0 z-10 bg-white/95 backdrop-blur-md flex flex-col items-center justify-center">
-                    <div className="relative">
-                       <div className="w-16 h-16 border-4 border-indigo-100 border-t-indigo-600 rounded-full animate-spin"></div>
-                    </div>
-                    <p className="mt-6 text-indigo-900 font-extrabold text-lg">Gemini AI is generating your study pack...</p>
+                    <div className="w-16 h-16 border-4 border-indigo-100 border-t-indigo-600 rounded-full animate-spin"></div>
+                    <p className="mt-6 text-indigo-900 font-extrabold text-lg">AI is processing "{topic}"...</p>
                   </div>
                 )}
 
-                {!loading && (activeTab === 'materials') && (
+                {!loading && activeTab === 'materials' && (
                   <div className="w-full h-full max-w-6xl mx-auto">
                     {selectedMaterial ? (
-                      <div className="animate-in fade-in zoom-in-95 duration-300 h-full flex flex-col">
+                      <div className="animate-in fade-in zoom-in-95 h-full flex flex-col">
                          <div className="flex items-center justify-between mb-6">
                             <h3 className="text-2xl font-bold flex items-center">
                                <i className={`fas ${getMaterialIcon(selectedMaterial.type)} mr-3`}></i>
                                {selectedMaterial.title}
                             </h3>
-                            <button onClick={() => setSelectedMaterial(null)} className="text-slate-500 hover:text-slate-800 font-bold text-sm bg-slate-100 px-4 py-2 rounded-xl transition-colors">
-                               Close Viewer <i className="fas fa-times ml-2"></i>
-                            </button>
+                            <div className="flex space-x-3">
+                               <button onClick={() => handleAnalyzeMaterial(selectedMaterial)} className="bg-indigo-600 text-white px-4 py-2 rounded-xl font-bold text-sm shadow-lg hover:bg-indigo-700 transition-all flex items-center">
+                                 <i className="fas fa-sparkles mr-2"></i> AI Deep Dive
+                               </button>
+                               <button onClick={() => setSelectedMaterial(null)} className="text-slate-500 hover:text-slate-800 font-bold text-sm bg-slate-100 px-4 py-2 rounded-xl">
+                                  Close
+                               </button>
+                            </div>
                          </div>
-                         
                          <div className="flex-1 w-full min-h-[500px] rounded-3xl overflow-hidden shadow-2xl bg-slate-900 border border-slate-700">
                             {selectedMaterial.url ? (
-                              selectedMaterial.type === 'video' ? (
-                                <video src={selectedMaterial.url} controls className="w-full h-full object-contain" />
-                              ) : selectedMaterial.type === 'image' ? (
-                                <div className="w-full h-full flex items-center justify-center p-4">
-                                   <img src={selectedMaterial.url} className="max-w-full max-h-full object-contain rounded-xl" alt={selectedMaterial.title} />
-                                </div>
-                              ) : selectedMaterial.type === 'link' ? (
-                                <div className="w-full h-full bg-slate-100 flex flex-col items-center justify-center text-center p-12">
-                                   <div className="w-20 h-20 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mb-6 shadow-sm">
-                                      <i className="fas fa-external-link-alt text-3xl"></i>
-                                   </div>
-                                   <h4 className="text-2xl font-black text-slate-800 mb-2">External Learning Resource</h4>
-                                   <p className="text-slate-500 max-w-md mb-8">This resource is hosted externally. Click below to open it in a new window.</p>
-                                   <a 
-                                      href={selectedMaterial.url} 
-                                      target="_blank" 
-                                      rel="noopener noreferrer"
-                                      className="bg-emerald-600 text-white px-10 py-4 rounded-2xl font-black shadow-xl shadow-emerald-100 hover:bg-emerald-700 transition-all hover:scale-105"
-                                   >
-                                      Visit Website <i className="fas fa-arrow-right ml-2"></i>
-                                   </a>
-                                </div>
-                              ) : (
-                                <iframe src={selectedMaterial.url} className="w-full h-full border-none bg-white" title={selectedMaterial.title} />
-                              )
+                              selectedMaterial.type === 'video' ? ( <video src={selectedMaterial.url} controls className="w-full h-full object-contain" /> ) :
+                              selectedMaterial.type === 'image' ? ( <div className="w-full h-full flex items-center justify-center p-4"><img src={selectedMaterial.url} className="max-w-full max-h-full object-contain rounded-xl" /></div> ) :
+                              ( <iframe src={selectedMaterial.url} className="w-full h-full border-none bg-white" title={selectedMaterial.title} /> )
                             ) : (
                               <div className="w-full h-full flex flex-col items-center justify-center text-white p-12 text-center">
                                  <i className={`fas ${getMaterialIcon(selectedMaterial.type)} text-6xl mb-6 opacity-50`}></i>
-                                 <h4 className="text-xl font-bold mb-2">No File Preview Available</h4>
-                                 <p className="text-slate-400 max-w-sm">This material record was created without an actual file source.</p>
+                                 <h4 className="text-xl font-bold">No Preview Available</h4>
                               </div>
                             )}
                          </div>
                       </div>
                     ) : (
                       <div className="space-y-12">
-                        {/* Folders Section */}
+                        {/* Chapters */}
                         {!selectedFolder && (
                           <div>
-                            <div className="flex items-center justify-between mb-6">
-                               <h3 className="text-lg font-black text-slate-800 uppercase tracking-widest">Chapters & Folders</h3>
-                            </div>
+                            <h3 className="text-lg font-black text-slate-800 uppercase tracking-widest mb-6">Chapters</h3>
                             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-                               {currentSubjectFolders.length === 0 ? (
-                                 <div 
-                                  onClick={() => setShowFolderModal(true)}
-                                  className="col-span-full border-2 border-dashed border-slate-200 rounded-3xl py-12 flex flex-col items-center justify-center text-slate-400 hover:bg-slate-50 hover:border-indigo-300 transition-all cursor-pointer group"
-                                 >
-                                    <i className="fas fa-folder-plus text-3xl mb-4 group-hover:scale-110 transition-transform"></i>
-                                    <span className="font-bold">Create your first chapter folder</span>
+                               {currentSubjectFolders.map(folder => (
+                                 <div key={folder.id} onClick={() => setSelectedFolder(folder)} className="bg-white p-5 rounded-2xl border border-slate-200 hover:border-indigo-500 hover:shadow-xl transition-all cursor-pointer group relative">
+                                    <div className="w-12 h-12 bg-indigo-50 rounded-xl flex items-center justify-center text-indigo-500 mb-4 group-hover:bg-indigo-600 group-hover:text-white transition-all"><i className="fas fa-folder text-xl"></i></div>
+                                    <h4 className="font-bold text-slate-800 mb-1">{folder.name}</h4>
+                                    <p className="text-[10px] text-slate-400 font-bold uppercase">Uploaded: {folder.createdAt}</p>
+                                    <button onClick={(e) => deleteFolder(folder.id, e)} className="absolute top-4 right-4 text-slate-200 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all"><i className="fas fa-trash-alt text-xs"></i></button>
                                  </div>
-                               ) : (
-                                 currentSubjectFolders.map(folder => (
-                                   <div 
-                                      key={folder.id} 
-                                      onClick={() => setSelectedFolder(folder)}
-                                      className="bg-white p-5 rounded-2xl border border-slate-200 hover:border-indigo-500 hover:shadow-xl transition-all cursor-pointer group relative"
-                                   >
-                                      <div className="w-12 h-12 bg-indigo-50 rounded-xl flex items-center justify-center text-indigo-500 mb-4 group-hover:bg-indigo-600 group-hover:text-white transition-all">
-                                         <i className="fas fa-folder text-xl"></i>
-                                      </div>
-                                      <h4 className="font-bold text-slate-800 mb-1">{folder.name}</h4>
-                                      <p className="text-[10px] text-slate-400 uppercase font-black tracking-widest">{folder.createdAt}</p>
-                                      <button 
-                                        onClick={(e) => deleteFolder(folder.id, e)}
-                                        className="absolute top-4 right-4 text-slate-300 hover:text-red-500 transition-colors"
-                                      >
-                                        <i className="fas fa-trash-alt text-xs"></i>
-                                      </button>
-                                   </div>
-                                 ))
-                               )}
+                               ))}
                             </div>
                           </div>
                         )}
-
-                        {/* Materials Section */}
+                        {/* Resources */}
                         <div>
-                          <div className="flex items-center justify-between mb-6">
-                             <h3 className="text-lg font-black text-slate-800 uppercase tracking-widest">
-                               {selectedFolder ? `${selectedFolder.name} Materials` : 'Recent Files'}
-                             </h3>
-                             {selectedFolder && (
-                               <button onClick={() => setSelectedFolder(null)} className="text-indigo-600 font-bold text-xs uppercase tracking-widest hover:underline">
-                                 <i className="fas fa-arrow-left mr-1"></i> Back to chapters
-                               </button>
-                             )}
-                          </div>
-                          
-                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 animate-in zoom-in-95 duration-300">
-                            {currentLevelMaterials.length === 0 ? (
-                              <div className="col-span-full py-20 text-center bg-slate-50/50 rounded-[2rem] border-2 border-dashed border-slate-200">
-                                 <div className="w-20 h-20 bg-white rounded-full flex items-center justify-center mx-auto mb-6 text-slate-300 shadow-sm">
-                                    <i className="fas fa-file-upload text-3xl"></i>
-                                 </div>
-                                 <h3 className="text-xl font-bold text-slate-800 mb-2">No materials here</h3>
-                                 <p className="text-slate-500 mb-8 max-w-xs mx-auto">Upload documents, images, or paste links for this chapter.</p>
-                                 <button 
-                                   onClick={() => setShowUploadModal(true)}
-                                   className="bg-indigo-600 text-white px-8 py-3 rounded-2xl font-bold shadow-xl shadow-indigo-100 hover:bg-indigo-700 transition-all"
-                                 >
-                                   Add to {selectedFolder ? selectedFolder.name : 'Subject'}
-                                 </button>
-                              </div>
-                            ) : (
-                              currentLevelMaterials.map(mat => (
-                                <div 
-                                  key={mat.id} 
-                                  onClick={() => setSelectedMaterial(mat)}
-                                  className="bg-white p-6 rounded-2xl border border-slate-200 hover:border-indigo-400 hover:shadow-xl transition-all group cursor-pointer"
-                                >
-                                  <div className="flex items-start justify-between mb-4">
-                                    <div className={`w-12 h-12 rounded-xl flex items-center justify-center text-white shadow-md ${
-                                      mat.type === 'pdf' ? 'bg-red-500' : 
-                                      mat.type === 'video' ? 'bg-blue-500' :
-                                      mat.type === 'image' ? 'bg-pink-500' :
-                                      mat.type === 'link' ? 'bg-emerald-500' : 'bg-slate-400'
-                                    }`}>
-                                      <i className={`fas ${
-                                        mat.type === 'pdf' ? 'fa-file-pdf' : 
-                                        mat.type === 'video' ? 'fa-play-circle' :
-                                        mat.type === 'image' ? 'fa-image' :
-                                        mat.type === 'link' ? 'fa-link' : 'fa-file-alt'
-                                      }`}></i>
-                                    </div>
-                                    <button 
-                                      onClick={(e) => deleteMaterial(mat.id, e)}
-                                      className="w-8 h-8 flex items-center justify-center text-slate-300 hover:text-red-500 transition-colors rounded-lg"
-                                    >
-                                      <i className="fas fa-trash-alt text-xs"></i>
-                                    </button>
+                          <h3 className="text-lg font-black text-slate-800 uppercase tracking-widest mb-6">{selectedFolder ? selectedFolder.name : 'General Resources'}</h3>
+                          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                            {currentLevelMaterials.map(mat => (
+                              <div key={mat.id} onClick={() => setSelectedMaterial(mat)} className="bg-white p-6 rounded-2xl border border-slate-200 hover:border-indigo-400 hover:shadow-xl transition-all group cursor-pointer relative">
+                                <div className="flex items-start justify-between mb-4">
+                                  <div className={`w-12 h-12 rounded-xl flex items-center justify-center text-white shadow-md ${mat.type === 'pdf' ? 'bg-red-500' : mat.type === 'video' ? 'bg-blue-500' : mat.type === 'image' ? 'bg-pink-500' : mat.type === 'link' ? 'bg-emerald-500' : 'bg-slate-400'}`}>
+                                    <i className={`fas ${mat.type === 'pdf' ? 'fa-file-pdf' : mat.type === 'video' ? 'fa-play-circle' : mat.type === 'image' ? 'fa-image' : mat.type === 'link' ? 'fa-link' : 'fa-file-alt'}`}></i>
                                   </div>
-                                  <h4 className="font-bold text-slate-800 mb-1 line-clamp-1">{mat.title}</h4>
-                                  <p className="text-xs text-slate-400 font-bold uppercase tracking-widest">{mat.date} • {mat.type.toUpperCase()}</p>
+                                  <button onClick={(e) => deleteMaterial(mat.id, e)} className="w-8 h-8 flex items-center justify-center text-slate-200 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all"><i className="fas fa-trash-alt"></i></button>
                                 </div>
-                              ))
-                            )}
+                                <h4 className="font-bold text-slate-800 mb-1 line-clamp-1">{mat.title}</h4>
+                                <div className="flex items-center space-x-2">
+                                   <p className="text-[10px] text-slate-400 font-bold uppercase">{mat.type.toUpperCase()}</p>
+                                   {INITIAL_MATERIALS.find(im => im.id === mat.id) && <span className="bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded-full text-[8px] font-black uppercase">Core</span>}
+                                </div>
+                              </div>
+                            ))}
                           </div>
                         </div>
                       </div>
                     )}
                   </div>
                 )}
-                
-                {/* AI TABS CONTENT */}
+
+                {/* AI Views */}
                 {!loading && activeTab === 'video' && (
-                  <div className="aspect-video w-full bg-slate-900 rounded-[2.5rem] overflow-hidden relative group shadow-2xl">
-                    <img src={`https://picsum.photos/seed/${topic}/1280/720`} className="w-full h-full object-cover opacity-40 grayscale" alt="Video" />
-                    <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-12">
-                       <button className="w-24 h-24 bg-white rounded-full flex items-center justify-center text-indigo-600 mb-8 shadow-2xl hover:scale-110 transition-transform group">
-                          <i className="fas fa-play text-4xl ml-2"></i>
-                       </button>
-                       <h3 className="text-4xl font-black text-white mb-4 tracking-tight">Lecture: {topic}</h3>
-                       <p className="text-indigo-100 text-lg font-medium max-w-lg">Master the fundamentals of {topic} in this breakdown.</p>
-                    </div>
+                  <div className="w-full flex flex-col items-center">
+                    {videoUrl ? (
+                      <div className="w-full aspect-video rounded-[2.5rem] overflow-hidden shadow-2xl bg-slate-900 border border-slate-700">
+                        <video src={videoUrl} controls className="w-full h-full object-contain" autoPlay />
+                      </div>
+                    ) : <div className="text-slate-400 font-bold">No AI Video generated. Use "AI Deep Dive" on a resource first.</div>}
                   </div>
                 )}
 
-                {!loading && activeTab === 'mindmap' && mindMapData && (
-                  <div className="w-full h-[600px] animate-in fade-in duration-500">
-                    <MindMapViewer data={mindMapData} />
+                {!loading && activeTab === 'mindmap' && (mindMapData ? <MindMapViewer data={mindMapData} /> : <div className="text-slate-400 font-bold">No Mind Map generated.</div>)}
+                {!loading && activeTab === 'audio' && (<AudioPlayer audioData={audioData} />)}
+                {!loading && activeTab === 'slides' && (slides.length > 0 ? <SlideViewer slides={slides} /> : <div className="text-slate-400 font-bold">No Slides generated.</div>)}
+                {!loading && activeTab === 'notes' && (notes ? (
+                  <div className="prose prose-slate max-w-4xl mx-auto bg-white p-12 rounded-[2rem] border border-slate-100 shadow-2xl overflow-y-auto max-h-[700px] custom-scrollbar">
+                    <h2 className="text-4xl font-black text-indigo-950 mb-8 border-b border-slate-100 pb-4">{notes.title}</h2>
+                    <div className="whitespace-pre-wrap leading-relaxed text-slate-700 text-lg">{notes.body}</div>
                   </div>
-                )}
-
-                {!loading && activeTab === 'audio' && (
-                  <div className="py-12"><AudioPlayer audioData={audioData} /></div>
-                )}
-
-                {!loading && activeTab === 'slides' && slides.length > 0 && (
-                  <div className="py-8"><SlideViewer slides={slides} /></div>
-                )}
-
-                {!loading && activeTab === 'notes' && notes && (
-                  <div className="prose prose-slate max-w-4xl mx-auto bg-white p-12 rounded-[2rem] border border-slate-100 shadow-2xl overflow-y-auto max-h-[700px] custom-scrollbar animate-in slide-in-from-bottom-8">
-                    <div className="flex items-center justify-between mb-10 border-b border-slate-100 pb-8">
-                       <h2 className="text-4xl font-black text-indigo-950 m-0">{notes.title}</h2>
-                    </div>
-                    <div className="whitespace-pre-wrap leading-relaxed text-slate-700 text-lg">
-                      {notes.body}
-                    </div>
-                  </div>
-                )}
+                ) : <div className="text-slate-400 font-bold">No Notes generated.</div>)}
               </div>
             </div>
           </div>
         )}
       </main>
 
-      {/* New Folder Modal */}
-      {showFolderModal && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-slate-900/70 backdrop-blur-md animate-in fade-in duration-200">
-          <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300">
-            <div className="px-8 py-8 border-b border-slate-100 flex items-center justify-between bg-indigo-50/30">
-               <h3 className="text-2xl font-black text-slate-800">New Chapter Folder</h3>
-               <button onClick={() => setShowFolderModal(false)} className="w-10 h-10 flex items-center justify-center bg-white rounded-full text-slate-400 hover:text-slate-600 shadow-sm">
+      {/* DEPLOYMENT CENTER MODAL */}
+      {showSettingsModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-slate-900/70 backdrop-blur-md">
+          <div className="bg-white w-full max-w-4xl rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in-95 max-h-[90vh] flex flex-col">
+            <div className="px-8 py-8 border-b border-slate-100 flex items-center justify-between bg-indigo-600 text-white">
+               <div>
+                  <h3 className="text-2xl font-black">Creator Deployment Center</h3>
+                  <p className="text-indigo-100 text-sm opacity-80">Make your uploaded content permanent for all students.</p>
+               </div>
+               <button onClick={() => setShowSettingsModal(false)} className="w-10 h-10 flex items-center justify-center bg-white/20 rounded-full hover:bg-white/40 transition-colors">
                   <i className="fas fa-times"></i>
                </button>
             </div>
-            <form onSubmit={handleCreateFolder} className="p-8 space-y-6">
-               <div>
-                  <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-2">Folder Name</label>
-                  <input name="name" required autoFocus type="text" placeholder="e.g. Chapter 1: Introduction" className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-5 py-4 text-sm focus:border-indigo-500 focus:ring-0 outline-none transition-colors" />
+            
+            <div className="p-8 flex-1 overflow-y-auto space-y-8">
+               <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                  <div className="bg-emerald-50 p-6 rounded-3xl border border-emerald-100">
+                    <h4 className="text-lg font-black text-emerald-900 mb-4 flex items-center">
+                      <i className="fas fa-save mr-3"></i> 1. Upload & Save
+                    </h4>
+                    <p className="text-sm text-emerald-800 leading-relaxed mb-4">
+                      Upload all your PDF notes, videos, and links using the "Add Content" button in the main app. Once you are happy with the library, move to step 2.
+                    </p>
+                    <div className="bg-white/50 p-3 rounded-xl text-xs font-bold text-emerald-600 italic">
+                      Current: {folders.length} Chapters, {materials.length} Materials
+                    </div>
+                  </div>
+
+                  <div className="bg-indigo-50 p-6 rounded-3xl border border-indigo-100">
+                    <h4 className="text-lg font-black text-indigo-900 mb-4 flex items-center">
+                      <i className="fas fa-code mr-3"></i> 2. Copy Code
+                    </h4>
+                    <p className="text-sm text-indigo-800 leading-relaxed mb-4">
+                      Copy the code block below. This code contains all your uploaded resources in a permanent format.
+                    </p>
+                    <button 
+                      onClick={() => {
+                        navigator.clipboard.writeText(generateConstantsCode());
+                        alert("Code copied! Now paste it into constants.tsx");
+                      }}
+                      className="w-full bg-indigo-600 text-white py-3 rounded-xl font-black text-xs shadow-lg hover:bg-indigo-700 transition-all"
+                    >
+                      <i className="fas fa-copy mr-2"></i> Copy Data Code
+                    </button>
+                  </div>
                </div>
-               <button type="submit" className="w-full bg-indigo-600 text-white py-5 rounded-[1.5rem] font-black shadow-xl shadow-indigo-100 hover:bg-indigo-700 transition-all active:scale-[0.98]">
-                  Create Folder
-               </button>
+
+               <div className="space-y-4">
+                  <h4 className="text-sm font-black text-slate-400 uppercase tracking-widest">3. Update constants.tsx</h4>
+                  <div className="relative group">
+                    <pre className="bg-slate-900 text-indigo-300 p-6 rounded-3xl text-xs font-mono overflow-x-auto border-4 border-slate-800 shadow-inner max-h-60 overflow-y-auto custom-scrollbar">
+                      {generateConstantsCode()}
+                    </pre>
+                    <div className="absolute top-4 right-4 bg-indigo-600 text-white text-[10px] px-2 py-1 rounded font-bold uppercase">Constants.tsx Code</div>
+                  </div>
+                  <div className="flex items-center space-x-3 text-amber-600 bg-amber-50 p-4 rounded-2xl border border-amber-100">
+                    <i className="fas fa-exclamation-triangle"></i>
+                    <p className="text-xs font-medium leading-relaxed">
+                      <strong>Important:</strong> After pasting this code and deploying, students will see your updates instantly. Local browser storage is only for your testing.
+                    </p>
+                  </div>
+               </div>
+
+               <div className="pt-4 flex space-x-4">
+                  <button onClick={() => { if(confirm("Clear all locally uploaded content?")) { localStorage.clear(); window.location.reload(); } }} className="flex-1 border border-red-200 text-red-500 py-3 rounded-xl text-xs font-black hover:bg-red-50 transition-all uppercase">Reset Local View</button>
+                  <button onClick={handleOpenKeySelector} className="flex-1 bg-slate-100 text-slate-600 py-3 rounded-xl text-xs font-black hover:bg-slate-200 transition-all uppercase">Manage API Key</button>
+               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* New Folder & Upload Modals (Hidden by default) */}
+      {showFolderModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-slate-900/70 backdrop-blur-md">
+          <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl p-8">
+            <h3 className="text-2xl font-black text-slate-800 mb-6">New Chapter</h3>
+            <form onSubmit={handleCreateFolder} className="space-y-6">
+               <input name="name" required autoFocus type="text" placeholder="e.g. Chapter 1: Basic Principles" className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-5 py-4 text-sm focus:border-indigo-500 outline-none transition-colors" />
+               <button type="submit" className="w-full bg-indigo-600 text-white py-5 rounded-2xl font-black shadow-xl hover:bg-indigo-700 transition-all">Create</button>
+               <button type="button" onClick={() => setShowFolderModal(false)} className="w-full py-2 text-slate-400 font-bold text-sm">Cancel</button>
             </form>
           </div>
         </div>
       )}
 
-      {/* Upload/Add Modal */}
       {showUploadModal && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-slate-900/70 backdrop-blur-md animate-in fade-in duration-200">
-          <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300">
-            <div className="px-8 py-8 border-b border-slate-100 bg-indigo-50/30">
-               <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-2xl font-black text-slate-800">Add Content</h3>
-                  <button onClick={() => { setShowUploadModal(false); setSelectedFile(null); setPastedLink(''); }} className="w-10 h-10 flex items-center justify-center bg-white rounded-full text-slate-400 hover:text-slate-600 shadow-sm">
-                    <i className="fas fa-times"></i>
-                  </button>
-               </div>
-               <div className="flex p-1 bg-white rounded-2xl shadow-sm border border-slate-100">
-                  <button 
-                    onClick={() => setUploadTab('file')}
-                    className={`flex-1 py-3 text-xs font-black uppercase tracking-widest rounded-xl transition-all ${uploadTab === 'file' ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-600'}`}
-                  >
-                    <i className="fas fa-file-upload mr-2"></i> File
-                  </button>
-                  <button 
-                    onClick={() => setUploadTab('link')}
-                    className={`flex-1 py-3 text-xs font-black uppercase tracking-widest rounded-xl transition-all ${uploadTab === 'link' ? 'bg-emerald-600 text-white shadow-lg' : 'text-slate-400 hover:text-slate-600'}`}
-                  >
-                    <i className="fas fa-link mr-2"></i> Link
-                  </button>
-               </div>
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-slate-900/70 backdrop-blur-md">
+          <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl overflow-hidden">
+            <div className="p-8 bg-indigo-50 border-b border-slate-100 flex items-center justify-between">
+              <h3 className="text-2xl font-black text-slate-800">Add Study Resource</h3>
+              <button onClick={() => setShowUploadModal(false)} className="text-slate-400"><i className="fas fa-times"></i></button>
             </div>
             <form onSubmit={handleFileUpload} className="p-8 space-y-6">
-               <input 
-                 type="file" 
-                 className="hidden" 
-                 ref={fileInputRef} 
-                 accept="image/*,video/*,application/pdf"
-                 onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
-               />
-               
-               <div>
-                  <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-2">Display Title</label>
-                  <input name="title" required type="text" placeholder={selectedFile ? selectedFile.name : uploadTab === 'link' ? "e.g. YouTube Lecture" : "e.g. Chapter Summary"} className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-5 py-4 text-sm focus:border-indigo-500 focus:ring-0 outline-none transition-colors" />
+               <div className="flex p-1 bg-slate-100 rounded-xl mb-4">
+                  <button type="button" onClick={() => setUploadTab('file')} className={`flex-1 py-2 text-xs font-black rounded-lg transition-all ${uploadTab === 'file' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'}`}>FILE</button>
+                  <button type="button" onClick={() => setUploadTab('link')} className={`flex-1 py-2 text-xs font-black rounded-lg transition-all ${uploadTab === 'link' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-400'}`}>URL LINK</button>
                </div>
-
+               <input name="title" required placeholder="Resource Title" className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-5 py-4 text-sm" />
                {uploadTab === 'file' ? (
-                 <>
-                   <div>
-                      <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-2">Category</label>
-                      <select name="type" className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-5 py-4 text-sm focus:border-indigo-500 focus:ring-0 outline-none transition-colors">
-                         <option value="pdf">PDF Document</option>
-                         <option value="video">Video Lecture</option>
-                         <option value="image">Image / Photo</option>
-                         <option value="doc">Study Sheet</option>
-                      </select>
-                   </div>
-                   
-                   <div 
-                     onClick={() => fileInputRef.current?.click()}
-                     className={`border-2 border-dashed rounded-3xl p-10 text-center transition-all cursor-pointer group ${selectedFile ? 'border-indigo-400 bg-indigo-50' : 'border-slate-200 bg-slate-50 hover:bg-indigo-50/50'}`}
-                   >
-                      <div className={`w-16 h-16 bg-white rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-sm group-hover:scale-110 transition-transform ${selectedFile ? 'text-indigo-600' : 'text-slate-400'}`}>
-                        <i className={`fas ${selectedFile ? 'fa-check-circle' : 'fa-cloud-upload-alt'} text-2xl`}></i>
-                      </div>
-                      <p className="text-sm font-bold text-slate-600 line-clamp-1">
-                        {selectedFile ? selectedFile.name : 'Select PDF, Image, or Video'}
-                      </p>
-                   </div>
-                 </>
-               ) : (
-                 <div>
-                    <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-2">Paste URL</label>
-                    <div className="relative">
-                       <i className="fas fa-link absolute left-5 top-5 text-slate-400"></i>
-                       <input 
-                         type="url" 
-                         required 
-                         placeholder="https://..." 
-                         value={pastedLink}
-                         onChange={(e) => setPastedLink(e.target.value)}
-                         className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl pl-12 pr-5 py-4 text-sm focus:border-emerald-500 focus:ring-0 outline-none transition-colors" 
-                       />
-                    </div>
-                    <p className="mt-3 text-[10px] text-slate-400 leading-relaxed">
-                       Paste links from YouTube, Wikipedia, or other educational sources to save them here.
-                    </p>
+                 <div onClick={() => fileInputRef.current?.click()} className="border-2 border-dashed border-slate-200 rounded-2xl p-8 text-center cursor-pointer hover:bg-indigo-50 transition-all">
+                    <input type="file" ref={fileInputRef} className="hidden" onChange={(e) => setSelectedFile(e.target.files?.[0] || null)} />
+                    <i className="fas fa-cloud-upload-alt text-3xl text-slate-300 mb-2"></i>
+                    <p className="text-xs font-bold text-slate-400">{selectedFile ? selectedFile.name : 'Click to Upload'}</p>
                  </div>
+               ) : (
+                 <input type="url" required placeholder="Paste Drive or YouTube Link" value={pastedLink} onChange={(e) => setPastedLink(e.target.value)} className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl px-5 py-4 text-sm" />
                )}
-
-               <button 
-                 type="submit" 
-                 disabled={uploadTab === 'file' ? !selectedFile : !pastedLink}
-                 className={`w-full py-5 rounded-[1.5rem] font-black shadow-xl transition-all active:scale-[0.98] ${
-                   (uploadTab === 'file' ? selectedFile : pastedLink) 
-                   ? (uploadTab === 'file' ? 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-100' : 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-100') + ' text-white'
-                   : 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                 }`}
-               >
-                  {uploadTab === 'file' ? 'Save File' : 'Save Link'}
-               </button>
+               <button type="submit" className="w-full bg-indigo-600 text-white py-5 rounded-2xl font-black shadow-xl hover:bg-indigo-700 transition-all">Confirm</button>
             </form>
           </div>
         </div>
       )}
 
       <footer className="bg-white border-t border-slate-200 p-8 text-center mt-auto">
-        <p className="text-slate-400 font-bold text-sm tracking-wide uppercase">EDUSPHERE AI • EMPOWERING EDUCATION</p>
+        <p className="text-slate-400 font-bold text-[10px] tracking-[0.2em] uppercase">EduSphere AI • Empowering Every Student</p>
       </footer>
     </div>
   );

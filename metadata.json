@@ -1,6 +1,6 @@
 {
-  "name": "EduSphere AI",
-  "description": "A comprehensive AI-powered learning platform providing students with mind maps, audio summaries, video modules, and interactive notes for all subjects.",
+  "name": "DSHS EduSphere ",
+  "description": "This app is designed as a comprehensive student learning platform that brings all subjects together in one place. Each subject includes video lessons, mind maps, audio explanations, presentation slides, and well-structured PDF notes, enabling students to learn anytime, anywhere through a simple and student-friendly interface",
   "requestFramePermissions": [
     "microphone"
   ]
